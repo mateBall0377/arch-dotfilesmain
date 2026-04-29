@@ -165,7 +165,10 @@ info "Создание разделов (EFI 512M + Root)..."
 sgdisk -n 1:0:+512M -t 1:ef00 -c 1:"EFI System" "$DISK" >> "$LOG" 2>&1
 sgdisk -n 2:0:0    -t 2:8300 -c 2:"Linux Root"  "$DISK" >> "$LOG" 2>&1
 partprobe "$DISK" 2>/dev/null || true
-sleep 1
+sleep 3
+hdparm -z "$DISK" 2>/dev/null || true
+blockdev --rereadpt "$DISK" 2>/dev/null || true
+sleep 2
 
 if [[ "$DISK" == *"nvme"* ]] || [[ "$DISK" == *"mmcblk"* ]]; then
     EFI_PART="${DISK}p1"
