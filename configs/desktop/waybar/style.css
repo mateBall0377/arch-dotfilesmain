@@ -1,0 +1,83 @@
+/* Waybar style — Catppuccin Mocha */
+
+* {
+    font-family: "JetBrainsMono Nerd Font", "Noto Sans", sans-serif;
+    font-size: 13px;
+    border: none;
+    border-radius: 0;
+    min-height: 0;
+}
+
+window#waybar {
+    background-color: rgba(30, 30, 46, 0.85);
+    color: #cdd6f4;
+    border-radius: 12px;
+}
+
+#workspaces {
+    background: rgba(49, 50, 68, 0.8);
+    border-radius: 10px;
+    padding: 0 4px;
+    margin: 4px 0;
+}
+
+#workspaces button {
+    color: #6c7086;
+    padding: 0 6px;
+    border-radius: 8px;
+    transition: all 0.2s;
+}
+
+#workspaces button.active {
+    color: #cba6f7;
+    background: rgba(203, 166, 247, 0.2);
+}
+
+#workspaces button.urgent {
+    color: #f38ba8;
+    background: rgba(243, 139, 168, 0.2);
+}
+
+#workspaces button:hover {
+    color: #cdd6f4;
+    background: rgba(205, 214, 244, 0.1);
+}
+
+#clock {
+    color: #cba6f7;
+    font-weight: bold;
+    padding: 0 12px;
+}
+
+#cpu, #memory, #network, #pulseaudio,
+#battery, #tray, #language {
+    background: rgba(49, 50, 68, 0.8);
+    border-radius: 10px;
+    padding: 0 10px;
+    margin: 4px 2px;
+}
+
+#cpu { color: #a6e3a1; }
+#memory { color: #89dceb; }
+#network { color: #89b4fa; }
+#pulseaudio { color: #f38ba8; }
+#language { color: #fab387; font-weight: bold; }
+
+#battery {
+    color: #a6e3a1;
+}
+#battery.warning { color: #f9e2af; }
+#battery.critical { color: #f38ba8; }
+#battery.charging { color: #a6e3a1; }
+
+#window {
+    color: #6c7086;
+    font-style: italic;
+    padding: 0 8px;
+}
+
+#tray > .passive { -gtk-icon-effect: dim; }
+#tray > .needs-attention {
+    -gtk-icon-effect: highlight;
+    background-color: rgba(243, 139, 168, 0.2);
+}
