@@ -23,17 +23,14 @@ en_US.UTF-8 UTF-8
 ru_RU.UTF-8 UTF-8
 EOF
 locale-gen
-
-# Системный язык — английский (совместимость с dev-инструментами)
 echo "LANG=en_US.UTF-8" > /etc/locale.conf
 
-# ─── CONSOLE (RU + EN всегда оба) ─────────────────────────
+# ─── CONSOLE ──────────────────────────────────────────────
 info "Настройка консоли"
 cat > /etc/vconsole.conf << 'EOF'
 KEYMAP=ru
 FONT=cyr-sun16
 EOF
-# Оба layout'а настроятся через X11/Wayland в DE
 
 # ─── HOSTNAME ─────────────────────────────────────────────
 info "Настройка hostname: $HOSTNAME"
@@ -45,8 +42,11 @@ cat > /etc/hosts << EOF
 EOF
 
 # ─── PACMAN ───────────────────────────────────────────────
-info "Включение multilib (для Steam/lib32)"
+info "Включение multilib + Yandex зеркало"
 sed -i '/^#\[multilib\]/,/^#Include/{s/^#//}' /etc/pacman.conf
+cat > /etc/pacman.d/mirrorlist << 'EOF'
+Server = https://mirror.yandex.ru/archlinux/$repo/os/$arch
+EOF
 pacman -Sy --noconfirm >> "$LOG" 2>&1 || true
 
 # ─── ROOT PASSWORD ────────────────────────────────────────
@@ -58,8 +58,6 @@ info "Создание пользователя: $USERNAME"
 useradd -m -G wheel,audio,video,storage,optical,input,gamemode,bluetooth \
     -s /bin/zsh "$USERNAME"
 echo "${USERNAME}:${USER_PASS}" | chpasswd
-
-# Sudo без пароля для wheel (поменяй если хочешь с паролем)
 sed -i 's/^# %wheel ALL=(ALL:ALL) ALL/%wheel ALL=(ALL:ALL) ALL/' /etc/sudoers
 
 # ─── SERVICES ─────────────────────────────────────────────
@@ -82,35 +80,31 @@ fi
 # ─── NVIDIA ───────────────────────────────────────────────
 if $NVIDIA && [[ "$PROFILE" == "desktop" ]]; then
     info "Настройка Nvidia (DRM modeset)"
-    # Ранняя загрузка KMS
     cat > /etc/modprobe.d/nvidia.conf << 'EOF'
 options nvidia-drm modeset=1
 options nvidia NVreg_PreserveVideoMemoryAllocations=1
 EOF
-    # Отключаем nouveau
     cat > /etc/modprobe.d/blacklist-nouveau.conf << 'EOF'
 blacklist nouveau
 options nouveau modeset=0
 EOF
-    # Модули для mkinitcpio
     sed -i 's/^MODULES=.*/MODULES=(nvidia nvidia_modeset nvidia_uvm nvidia_drm)/' \
         /etc/mkinitcpio.conf
 fi
 
-# ─── MKINITCPIO HOOKS ─────────────────────────────────────
+# ─── MKINITCPIO ───────────────────────────────────────────
 info "Настройка mkinitcpio"
 if $USE_LUKS; then
     sed -i 's/^HOOKS=.*/HOOKS=(base udev autodetect modconf kms keyboard keymap consolefont block encrypt filesystems fsck)/' \
         /etc/mkinitcpio.conf
 else
-    # Добавляем kms для Nvidia early KMS
     sed -i 's/^HOOKS=.*/HOOKS=(base udev autodetect modconf kms keyboard keymap consolefont block filesystems fsck)/' \
         /etc/mkinitcpio.conf
 fi
 mkinitcpio -P >> "$LOG" 2>&1
 ok "initramfs пересобран"
 
-# ─── BOOTLOADER (systemd-boot) ────────────────────────────
+# ─── BOOTLOADER ───────────────────────────────────────────
 info "Установка bootloader (systemd-boot)"
 bootctl install >> "$LOG" 2>&1
 
@@ -122,7 +116,6 @@ console-mode max
 editor  no
 EOF
 
-# Определяем UUID для bootentry
 if $USE_LUKS; then
     LUKS_UUID=$(blkid -s UUID -o value "$ROOT_PART")
     EXTRA_PARAMS="cryptdevice=UUID=${LUKS_UUID}:cryptroot root=/dev/mapper/cryptroot"
@@ -133,7 +126,6 @@ fi
 
 KERNEL_PARAMS="$EXTRA_PARAMS rw quiet loglevel=3 systemd.show_status=auto rd.udev.log_level=3"
 
-# Nvidia дополнительные параметры
 if $NVIDIA && [[ "$PROFILE" == "desktop" ]]; then
     KERNEL_PARAMS="$KERNEL_PARAMS nvidia-drm.modeset=1"
 fi
@@ -154,37 +146,26 @@ EOF
 
 ok "Bootloader установлен"
 
-# ─── ZSH / OH-MY-ZSH (опционально) ───────────────────────
+# ─── ZSH ──────────────────────────────────────────────────
 info "Настройка ZSH"
 chsh -s /bin/zsh "$USERNAME" >> "$LOG" 2>&1 || true
 
 # ─── SSH ──────────────────────────────────────────────────
 info "Настройка SSH"
-sed -i 's/^#PermitRootLogin.*/PermitRootLogin no/' /etc/ssh/sshd_config
+sed -i 's/^#PermitRootLogin.*/PermitRootLogin no/'                /etc/ssh/sshd_config
 sed -i 's/^#PasswordAuthentication.*/PasswordAuthentication yes/' /etc/ssh/sshd_config
-sed -i 's/^#PubkeyAuthentication.*/PubkeyAuthentication yes/' /etc/ssh/sshd_config
+sed -i 's/^#PubkeyAuthentication.*/PubkeyAuthentication yes/'     /etc/ssh/sshd_config
 
-# ─── PROFILE-SPECIFIC ─────────────────────────────────────
-if [[ "$PROFILE" == "server" ]]; then
-    info "Настройка VMware сервера"
-    # VMware open-vm-tools
-    systemctl enable vmtoolsd 2>/dev/null || true
-fi
-
+# ─── PROFILE SPECIFIC ─────────────────────────────────────
 if [[ "$PROFILE" == "desktop" ]]; then
     info "Настройка рабочего стола"
 
-    # SDDM тема
     mkdir -p /etc/sddm.conf.d
     cat > /etc/sddm.conf.d/theme.conf << 'EOF'
 [Theme]
 Current=breeze
 EOF
 
-    # XDG user dirs
-    sudo -u "$USERNAME" xdg-user-dirs-update 2>/dev/null || true
-
-    # Gamemode config
     mkdir -p /home/"$USERNAME"/.config
     cat > /home/"$USERNAME"/.config/gamemode.ini << 'EOF'
 [general]
@@ -202,5 +183,38 @@ pin_cores=yes
 EOF
     chown -R "$USERNAME:$USERNAME" /home/"$USERNAME"/.config
 fi
+
+# ─── FIRST BOOT SERVICE (AUR + dotfiles) ──────────────────
+info "Настройка сервиса первого запуска"
+
+cat > /etc/first-boot-vars << EOF
+USERNAME="$USERNAME"
+PROFILE="$PROFILE"
+DOTFILES_REPO="$DOTFILES_REPO"
+EOF
+
+cp /root/first-boot.sh /usr/local/bin/first-boot.sh
+chmod +x /usr/local/bin/first-boot.sh
+
+cat > /etc/systemd/system/first-boot.service << 'SVC'
+[Unit]
+Description=First Boot Setup (yay + AUR + dotfiles)
+After=network-online.target
+Wants=network-online.target
+ConditionPathExists=/usr/local/bin/first-boot.sh
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/first-boot.sh
+RemainAfterExit=yes
+StandardOutput=journal+console
+StandardError=journal+console
+
+[Install]
+WantedBy=multi-user.target
+SVC
+
+systemctl enable first-boot.service
+ok "First-boot сервис включён"
 
 ok "Chroot настройка завершена"
