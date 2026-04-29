@@ -156,7 +156,8 @@ ok "Зеркала настроены"
 #  STEP 2 — PARTITIONING
 # ═══════════════════════════════════════════════════════════
 step "2/8 | Разметка диска $DISK"
-
+umount -R -l /mnt 2>/dev/null || true
+swapoff -a 2>/dev/null || true
 info "Очистка диска..."
 wipefs -af "$DISK" >> "$LOG" 2>&1
 sgdisk -Z "$DISK" >> "$LOG" 2>&1
