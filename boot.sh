@@ -1,8 +1,7 @@
 #!/bin/bash
 
-BASE="https://raw.githubusercontent.com/mateBall0377/arch-dotfilesmain/master"
-curl -fsSL "$BASE/install.sh"      -o install.sh
-curl -fsSL "$BASE/chroot-setup.sh" -o chroot-setup.sh
-curl -fsSL "$BASE/first-boot.sh"   -o first-boot.sh
+echo "Качаю репозиторий..."
+git clone https://github.com/mateBall0377/arch-dotfilesmain.git --depth=1
+cd arch-dotfilesmain
 chmod +x install.sh chroot-setup.sh first-boot.sh
 bash install.sh
