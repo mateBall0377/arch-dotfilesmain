@@ -1,6 +1,5 @@
 #!/bin/bash
 # first-boot.sh — запускается один раз при первом старте системы
-# Устанавливает yay и AUR пакеты от имени реального пользователя
 
 source /etc/first-boot-vars
 
@@ -38,7 +37,6 @@ AUR_PKGS="vcpkg"
 if [[ "$PROFILE" == "desktop" ]]; then
     AUR_PKGS="$AUR_PKGS joplin-desktop"
 fi
-
 sudo -u "$USERNAME" yay -S --noconfirm --needed $AUR_PKGS && ok "AUR пакеты установлены"
 
 # Dotfiles
