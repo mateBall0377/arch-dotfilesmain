@@ -140,12 +140,20 @@ EOF
     2)
         info "Использую немецкие зеркала"
         reflector --country Germany --latest 5 --protocol https \
-            --sort rate --save /etc/pacman.d/mirrorlist 2>>"$LOG" || true
+            --sort rate --save /etc/pacman.d/mirrorlist 2>>"$LOG" || \
+        cat > /etc/pacman.d/mirrorlist << 'EOF'
+Server = https://mirror.netcologne.de/archlinux/$repo/os/$arch
+Server = https://mirror.selfnet.de/archlinux/$repo/os/$arch
+EOF
         ;;
     3)
         info "Использую американские зеркала"
         reflector --country "United States" --latest 5 --protocol https \
-            --sort rate --save /etc/pacman.d/mirrorlist 2>>"$LOG" || true
+            --sort rate --save /etc/pacman.d/mirrorlist 2>>"$LOG" || \
+        cat > /etc/pacman.d/mirrorlist << 'EOF'
+Server = https://mirror.rackspace.com/archlinux/$repo/os/$arch
+Server = https://mirrors.mit.edu/archlinux/$repo/os/$arch
+EOF
         ;;
 esac
 
@@ -167,7 +175,6 @@ sgdisk -n 1:0:+512M -t 1:ef00 -c 1:"EFI System" "$DISK" >> "$LOG" 2>&1
 sgdisk -n 2:0:0    -t 2:8300 -c 2:"Linux Root"  "$DISK" >> "$LOG" 2>&1
 partprobe "$DISK" 2>/dev/null || true
 sleep 3
-hdparm -z "$DISK" 2>/dev/null || true
 blockdev --rereadpt "$DISK" 2>/dev/null || true
 sleep 2
 
@@ -178,6 +185,10 @@ else
     EFI_PART="${DISK}1"
     ROOT_PART="${DISK}2"
 fi
+
+# Проверяем что разделы появились
+[[ ! -b "$EFI_PART" ]] && die "EFI раздел $EFI_PART не создан"
+[[ ! -b "$ROOT_PART" ]] && die "Root раздел $ROOT_PART не создан"
 
 info "Форматирование EFI раздела..."
 mkfs.fat -F32 -n "ARCH_EFI" "$EFI_PART" >> "$LOG" 2>&1
@@ -209,11 +220,17 @@ ok "Диск размечен и примонтирован"
 step "3/8 | Создание swap"
 if [[ "$SWAP_SIZE" != "0" ]]; then
     info "Создаю swapfile ($SWAP_SIZE)..."
-    dd if=/dev/zero of=/mnt/swapfile bs=1M count=$(echo "$SWAP_SIZE" | \
-        sed 's/G//' | awk '{print $1*1024}') status=progress 2>>"$LOG"
+    # fallocate — мгновенно, dd занимает минуты
+    if ! fallocate -l "$SWAP_SIZE" /mnt/swapfile 2>>"$LOG"; then
+        # fallocate не работает на некоторых ФС — fallback на dd
+        warn "fallocate не сработал, использую dd..."
+        dd if=/dev/zero of=/mnt/swapfile bs=1M \
+            count=$(echo "$SWAP_SIZE" | sed 's/[Gg]//' | awk '{print $1*1024}') \
+            status=progress 2>>"$LOG"
+    fi
     chmod 600 /mnt/swapfile
     mkswap /mnt/swapfile >> "$LOG" 2>&1
-    swapon /mnt/swapfile
+    # НЕ делаем swapon здесь — genfstab сам запишет swapfile в fstab по UUID
     ok "Swap создан: $SWAP_SIZE"
 else
     info "Swap отключён"
@@ -284,10 +301,11 @@ ok "Пакеты установлены"
 #  STEP 5 — FSTAB
 # ═══════════════════════════════════════════════════════════
 step "5/8 | Генерация fstab"
+# genfstab генерирует записи для всего примонтированного включая swapfile
+# НЕ добавляем swapfile вручную — genfstab сам справится
 genfstab -U /mnt >> /mnt/etc/fstab
-if [[ "$SWAP_SIZE" != "0" ]]; then
-    echo "/swapfile  none  swap  defaults  0 0" >> /mnt/etc/fstab
-fi
+info "Содержимое fstab:"
+cat /mnt/etc/fstab | tee -a "$LOG"
 ok "fstab готов"
 
 # ═══════════════════════════════════════════════════════════
@@ -309,14 +327,14 @@ SWAP_SIZE="$SWAP_SIZE"
 DOTFILES_REPO="$DOTFILES_REPO"
 EOF
 
-# Копируем скрипты в chroot
-cp "$(dirname "$0")/chroot-setup.sh" /mnt/root/chroot-setup.sh
-cp "$(dirname "$0")/first-boot.sh"   /mnt/root/first-boot.sh
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+cp "$SCRIPT_DIR/chroot-setup.sh" /mnt/root/chroot-setup.sh
+cp "$SCRIPT_DIR/first-boot.sh"   /mnt/root/first-boot.sh
 chmod +x /mnt/root/chroot-setup.sh /mnt/root/first-boot.sh
 
 info "Запускаю chroot-setup.sh..."
-# Монтируем efivarfs чтобы bootctl мог писать EFI переменные
-mount --bind /sys/firmware/efi/efivars /mnt/sys/firmware/efi/efivars 2>/dev/null || true
+# arch-chroot сам монтирует /proc /sys /dev /run
+# efivarfs монтируется ВНУТРИ chroot-setup.sh перед bootctl
 arch-chroot /mnt bash /root/chroot-setup.sh 2>&1 | tee -a "$LOG"
 ok "Система настроена"
 
@@ -354,11 +372,20 @@ step "8/8 | Финализация"
 mkdir -p /mnt/var/log
 cp "$LOG" /mnt/var/log/arch-install.log
 
-rm -f /mnt/root/install-vars.sh /mnt/root/chroot-setup.sh /mnt/root/first-boot.sh
+# Удаляем временные файлы из установленной системы
+rm -f /mnt/root/install-vars.sh
+rm -f /mnt/root/chroot-setup.sh
+# first-boot.sh уже скопирован в /usr/local/bin/ внутри chroot, удаляем оригинал
+rm -f /mnt/root/first-boot.sh
 
 info "Размонтирование..."
-umount -R /mnt 2>/dev/null || true
+# Сначала явно размонтируем efivarfs если arch-chroot его не прибрал
+umount /mnt/sys/firmware/efi/efivars 2>/dev/null || true
+# Ленивое размонтирование — отцепит даже если что-то держит
+umount -R -l /mnt 2>/dev/null || true
+
 if $USE_LUKS; then
+    sleep 1
     cryptsetup close cryptroot 2>/dev/null || true
 fi
 
