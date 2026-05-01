@@ -315,6 +315,8 @@ cp "$(dirname "$0")/first-boot.sh"   /mnt/root/first-boot.sh
 chmod +x /mnt/root/chroot-setup.sh /mnt/root/first-boot.sh
 
 info "Запускаю chroot-setup.sh..."
+# Монтируем efivarfs чтобы bootctl мог писать EFI переменные
+mount --bind /sys/firmware/efi/efivars /mnt/sys/firmware/efi/efivars 2>/dev/null || true
 arch-chroot /mnt bash /root/chroot-setup.sh 2>&1 | tee -a "$LOG"
 ok "Система настроена"
 
