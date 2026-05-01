@@ -7,6 +7,8 @@ source /root/install-vars.sh
 LOG="/tmp/chroot-setup.log"
 info() { echo -e "\033[0;36m[→]\033[0m $1" | tee -a "$LOG"; }
 ok()   { echo -e "\033[0;32m[✓]\033[0m $1" | tee -a "$LOG"; }
+warn() { echo -e "\033[1;33m[!]\033[0m $1" | tee -a "$LOG"; }
+die()  { echo -e "\033[0;31m[✗] ОШИБКА: $1\033[0m" | tee -a "$LOG"; exit 1; }
 
 # ─── TIMEZONE ─────────────────────────────────────────────
 info "Настройка часового пояса"
@@ -42,7 +44,7 @@ sed -i '/^#\[multilib\]/,/^#Include/{s/^#//}' /etc/pacman.conf
 cat > /etc/pacman.d/mirrorlist << 'EOF'
 Server = https://mirror.yandex.ru/archlinux/$repo/os/$arch
 EOF
-pacman -Sy --noconfirm >> "$LOG" 2>&1 || true
+pacman -Sy --noconfirm >> "$LOG" 2>&1 || warn "pacman -Sy завершился с ошибкой, продолжаем"
 
 # ─── PASSWORDS ────────────────────────────────────────────
 info "Установка паролей"
@@ -50,7 +52,6 @@ echo "root:${ROOT_PASS}" | chpasswd
 
 # ─── USER ─────────────────────────────────────────────────
 info "Создание пользователя: $USERNAME"
-# Только базовые группы которые точно есть
 useradd -m -G wheel,audio,video,storage,optical,input -s /bin/zsh "$USERNAME"
 echo "${USERNAME}:${USER_PASS}" | chpasswd
 
@@ -69,12 +70,12 @@ systemctl enable NetworkManager
 systemctl enable sshd
 
 if [[ "$PROFILE" == "server" ]]; then
-    systemctl enable vmtoolsd 2>/dev/null || true
+    systemctl enable vmtoolsd          2>/dev/null || true
     systemctl enable vmware-vmblock-fuse 2>/dev/null || true
 fi
 
 if [[ "$PROFILE" == "desktop" ]]; then
-    systemctl enable sddm 2>/dev/null || true
+    systemctl enable sddm      2>/dev/null || true
     systemctl enable bluetooth 2>/dev/null || true
 fi
 
@@ -107,7 +108,23 @@ ok "initramfs пересобран"
 
 # ─── BOOTLOADER ───────────────────────────────────────────
 info "Установка bootloader (systemd-boot)"
-bootctl install --no-variables >> "$LOG" 2>&1 || true
+
+# Монтируем efivarfs внутри chroot — без него bootctl не запишет EFI переменные
+# и выдаёт "skipping EFI variable modifications"
+if ! mountpoint -q /sys/firmware/efi/efivars 2>/dev/null; then
+    info "Монтируем efivarfs..."
+    mount -t efivarfs efivarfs /sys/firmware/efi/efivars >> "$LOG" 2>&1 || \
+        warn "Не удалось смонтировать efivarfs — EFI переменные не будут записаны"
+else
+    # Перемонтируем на случай если смонтировано read-only
+    mount -o remount,rw /sys/firmware/efi/efivars >> "$LOG" 2>&1 || true
+fi
+
+# Устанавливаем bootloader — БЕЗ --no-variables чтобы EFI запись создалась
+bootctl install >> "$LOG" 2>&1 || {
+    warn "bootctl install упал, пробую с --no-variables как fallback..."
+    bootctl install --no-variables >> "$LOG" 2>&1 || die "bootctl install не удался"
+}
 
 mkdir -p /boot/loader/entries
 
@@ -118,11 +135,18 @@ console-mode max
 editor  no
 EOF
 
+# Определяем UUID — ОБЯЗАТЕЛЬНО проверяем что он не пустой
 if $USE_LUKS; then
-    LUKS_UUID=$(blkid -s UUID -o value "$ROOT_PART")
+    # Для LUKS берём UUID самого LUKS-раздела (не маппера)
+    LUKS_UUID=$(blkid -s UUID -o value "$ROOT_PART" 2>/dev/null)
+    [[ -z "$LUKS_UUID" ]] && die "Не удалось получить UUID LUKS раздела $ROOT_PART"
+    info "LUKS UUID: $LUKS_UUID"
     EXTRA_PARAMS="cryptdevice=UUID=${LUKS_UUID}:cryptroot root=/dev/mapper/cryptroot"
 else
-    ROOT_UUID=$(blkid -s UUID -o value "$MOUNT_ROOT")
+    # Для обычного раздела берём UUID файловой системы (ext4)
+    ROOT_UUID=$(blkid -s UUID -o value "$MOUNT_ROOT" 2>/dev/null)
+    [[ -z "$ROOT_UUID" ]] && die "Не удалось получить UUID раздела $MOUNT_ROOT"
+    info "Root UUID: $ROOT_UUID"
     EXTRA_PARAMS="root=UUID=${ROOT_UUID}"
 fi
 
@@ -147,10 +171,11 @@ EOF
 
 ok "Bootloader установлен"
 
-# Проверка
-info "Проверка boot entries:"
-ls -la /boot/loader/entries/ | tee -a "$LOG"
+# Проверка — показываем что реально записалось
+info "Содержимое arch.conf:"
 cat /boot/loader/entries/arch.conf | tee -a "$LOG"
+info "Bootctl status:"
+bootctl status >> "$LOG" 2>&1 || true
 
 # ─── ZSH ──────────────────────────────────────────────────
 info "Настройка ZSH"
