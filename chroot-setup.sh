@@ -1,8 +1,5 @@
 #!/bin/bash
-# =============================================================
-#  chroot-setup.sh — запускается внутри arch-chroot
-#  Читает переменные из /root/install-vars.sh
-# =============================================================
+# chroot-setup.sh
 
 set -e
 source /root/install-vars.sh
@@ -12,16 +9,14 @@ info() { echo -e "\033[0;36m[→]\033[0m $1" | tee -a "$LOG"; }
 ok()   { echo -e "\033[0;32m[✓]\033[0m $1" | tee -a "$LOG"; }
 
 # ─── TIMEZONE ─────────────────────────────────────────────
-info "Настройка часового пояса (Ekaterinburg / Chelyabinsk)"
+info "Настройка часового пояса"
 ln -sf /usr/share/zoneinfo/Asia/Yekaterinburg /etc/localtime
 hwclock --systohc
 
 # ─── LOCALE ───────────────────────────────────────────────
-info "Настройка локали (ru_RU + en_US)"
-cat >> /etc/locale.gen << 'EOF'
-en_US.UTF-8 UTF-8
-ru_RU.UTF-8 UTF-8
-EOF
+info "Настройка локали"
+grep -qxF 'en_US.UTF-8 UTF-8' /etc/locale.gen || echo 'en_US.UTF-8 UTF-8' >> /etc/locale.gen
+grep -qxF 'ru_RU.UTF-8 UTF-8' /etc/locale.gen || echo 'ru_RU.UTF-8 UTF-8' >> /etc/locale.gen
 locale-gen
 echo "LANG=en_US.UTF-8" > /etc/locale.conf
 
@@ -49,15 +44,23 @@ Server = https://mirror.yandex.ru/archlinux/$repo/os/$arch
 EOF
 pacman -Sy --noconfirm >> "$LOG" 2>&1 || true
 
-# ─── ROOT PASSWORD ────────────────────────────────────────
-info "Установка пароля root"
+# ─── PASSWORDS ────────────────────────────────────────────
+info "Установка паролей"
 echo "root:${ROOT_PASS}" | chpasswd
 
 # ─── USER ─────────────────────────────────────────────────
 info "Создание пользователя: $USERNAME"
-useradd -m -G wheel,audio,video,storage,optical,input,gamemode,bluetooth \
-    -s /bin/zsh "$USERNAME"
+# Только базовые группы которые точно есть
+useradd -m -G wheel,audio,video,storage,optical,input -s /bin/zsh "$USERNAME"
 echo "${USERNAME}:${USER_PASS}" | chpasswd
+
+# Добавляем в дополнительные группы если они существуют
+for grp in gamemode bluetooth; do
+    if getent group "$grp" &>/dev/null; then
+        usermod -aG "$grp" "$USERNAME"
+    fi
+done
+
 sed -i 's/^# %wheel ALL=(ALL:ALL) ALL/%wheel ALL=(ALL:ALL) ALL/' /etc/sudoers
 
 # ─── SERVICES ─────────────────────────────────────────────
@@ -68,18 +71,16 @@ systemctl enable sshd
 if [[ "$PROFILE" == "server" ]]; then
     systemctl enable vmtoolsd 2>/dev/null || true
     systemctl enable vmware-vmblock-fuse 2>/dev/null || true
-    info "VMware tools включены"
 fi
 
 if [[ "$PROFILE" == "desktop" ]]; then
-    systemctl enable sddm
+    systemctl enable sddm 2>/dev/null || true
     systemctl enable bluetooth 2>/dev/null || true
-    info "SDDM включён"
 fi
 
 # ─── NVIDIA ───────────────────────────────────────────────
 if $NVIDIA && [[ "$PROFILE" == "desktop" ]]; then
-    info "Настройка Nvidia (DRM modeset)"
+    info "Настройка Nvidia"
     cat > /etc/modprobe.d/nvidia.conf << 'EOF'
 options nvidia-drm modeset=1
 options nvidia NVreg_PreserveVideoMemoryAllocations=1
@@ -106,9 +107,10 @@ ok "initramfs пересобран"
 
 # ─── BOOTLOADER ───────────────────────────────────────────
 info "Установка bootloader (systemd-boot)"
-bootctl install >> "$LOG" 2>&1
+bootctl install --no-variables >> "$LOG" 2>&1 || true
 
 mkdir -p /boot/loader/entries
+
 cat > /boot/loader/loader.conf << 'EOF'
 default arch.conf
 timeout 3
@@ -124,8 +126,7 @@ else
     EXTRA_PARAMS="root=UUID=${ROOT_UUID}"
 fi
 
-KERNEL_PARAMS="$EXTRA_PARAMS rw quiet loglevel=3 systemd.show_status=auto rd.udev.log_level=3"
-
+KERNEL_PARAMS="$EXTRA_PARAMS rw quiet loglevel=3"
 if $NVIDIA && [[ "$PROFILE" == "desktop" ]]; then
     KERNEL_PARAMS="$KERNEL_PARAMS nvidia-drm.modeset=1"
 fi
@@ -146,6 +147,11 @@ EOF
 
 ok "Bootloader установлен"
 
+# Проверка
+info "Проверка boot entries:"
+ls -la /boot/loader/entries/ | tee -a "$LOG"
+cat /boot/loader/entries/arch.conf | tee -a "$LOG"
+
 # ─── ZSH ──────────────────────────────────────────────────
 info "Настройка ZSH"
 chsh -s /bin/zsh "$USERNAME" >> "$LOG" 2>&1 || true
@@ -156,36 +162,24 @@ sed -i 's/^#PermitRootLogin.*/PermitRootLogin no/'                /etc/ssh/sshd_
 sed -i 's/^#PasswordAuthentication.*/PasswordAuthentication yes/' /etc/ssh/sshd_config
 sed -i 's/^#PubkeyAuthentication.*/PubkeyAuthentication yes/'     /etc/ssh/sshd_config
 
-# ─── PROFILE SPECIFIC ─────────────────────────────────────
+# ─── DESKTOP SPECIFIC ─────────────────────────────────────
 if [[ "$PROFILE" == "desktop" ]]; then
-    info "Настройка рабочего стола"
-
     mkdir -p /etc/sddm.conf.d
     cat > /etc/sddm.conf.d/theme.conf << 'EOF'
 [Theme]
 Current=breeze
 EOF
-
     mkdir -p /home/"$USERNAME"/.config
     cat > /home/"$USERNAME"/.config/gamemode.ini << 'EOF'
 [general]
 reaper_freq=5
 desiredgov=performance
-
-[gpu]
-apply_gpu_optimisations=accept-responsibility
-gpu_device=0
-nv_powermizer_mode=1
-
-[cpu]
-park_cores=no
-pin_cores=yes
 EOF
     chown -R "$USERNAME:$USERNAME" /home/"$USERNAME"/.config
 fi
 
-# ─── FIRST BOOT SERVICE (AUR + dotfiles) ──────────────────
-info "Настройка сервиса первого запуска"
+# ─── FIRST BOOT SERVICE ───────────────────────────────────
+info "Настройка first-boot сервиса"
 
 cat > /etc/first-boot-vars << EOF
 USERNAME="$USERNAME"
@@ -217,4 +211,4 @@ SVC
 systemctl enable first-boot.service
 ok "First-boot сервис включён"
 
-ok "Chroot настройка завершена"
+ok "=== Chroot настройка завершена ==="
