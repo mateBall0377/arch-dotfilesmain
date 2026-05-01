@@ -109,22 +109,51 @@ ok "initramfs пересобран"
 # ─── BOOTLOADER ───────────────────────────────────────────
 info "Установка bootloader (systemd-boot)"
 
-# Монтируем efivarfs внутри chroot — без него bootctl не запишет EFI переменные
-# и выдаёт "skipping EFI variable modifications"
+# ── 1. Монтируем efivarfs — без него bootctl не пишет EFI-переменные ──
+EFIVARFS_MOUNTED=false
 if ! mountpoint -q /sys/firmware/efi/efivars 2>/dev/null; then
     info "Монтируем efivarfs..."
-    mount -t efivarfs efivarfs /sys/firmware/efi/efivars >> "$LOG" 2>&1 || \
-        warn "Не удалось смонтировать efivarfs — EFI переменные не будут записаны"
+    if mount -t efivarfs efivarfs /sys/firmware/efi/efivars >> "$LOG" 2>&1; then
+        EFIVARFS_MOUNTED=true
+        info "efivarfs смонтирован"
+    else
+        warn "Не удалось смонтировать efivarfs — попробуем efibootmgr как fallback"
+    fi
 else
-    # Перемонтируем на случай если смонтировано read-only
+    # Перемонтируем rw на случай read-only
     mount -o remount,rw /sys/firmware/efi/efivars >> "$LOG" 2>&1 || true
+    EFIVARFS_MOUNTED=true
 fi
 
-# Устанавливаем bootloader — БЕЗ --no-variables чтобы EFI запись создалась
-bootctl install >> "$LOG" 2>&1 || {
-    warn "bootctl install упал, пробую с --no-variables как fallback..."
-    bootctl install --no-variables >> "$LOG" 2>&1 || die "bootctl install не удался"
-}
+# ── 2. Ставим bootloader ──────────────────────────────────
+if bootctl install >> "$LOG" 2>&1; then
+    ok "bootctl install успешен (EFI-переменная записана)"
+else
+    warn "bootctl install упал — пробую efibootmgr как fallback..."
+
+    # Убеждаемся что efibootmgr установлен
+    pacman -S --noconfirm --needed efibootmgr >> "$LOG" 2>&1 || true
+
+    # Файлы загрузчика всё равно нужны — ставим без EFI-переменных
+    bootctl install --no-variables >> "$LOG" 2>&1 || \
+        warn "bootctl --no-variables тоже упал, продолжаем с efibootmgr"
+
+    # Определяем номер EFI-раздела из EFI_PART (sda1 → 1, nvme0n1p1 → 1)
+    EFI_PART_NUM=$(echo "$EFI_PART" | grep -oE '[0-9]+$')
+
+    if efibootmgr \
+        --create \
+        --disk "$DISK" \
+        --part "$EFI_PART_NUM" \
+        --label "Arch Linux (systemd-boot)" \
+        --loader '\EFI\systemd\systemd-bootx64.efi' \
+        >> "$LOG" 2>&1; then
+        ok "efibootmgr: EFI-запись создана вручную"
+    else
+        warn "efibootmgr тоже упал — загрузчик установлен только как fallback (EFI/BOOT/BOOTX64.EFI)"
+        warn "Если VMware не загружается: зайди в настройки VM → добавь загрузочную запись вручную"
+    fi
+fi
 
 mkdir -p /boot/loader/entries
 
